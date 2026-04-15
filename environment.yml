@@ -1,0 +1,13 @@
+name: mdcrow-core
+channels:
+  - conda-forge
+dependencies:
+  - python=3.13  # Specify your exact Python version here
+  - ipykernel    # For Jupyter integration
+  # --- CONDA PACKAGES ---
+  - pandas
+  # --- PIP PACKAGES ---
+  # Conda will install pip, then use it to install the rest of your requirements.txt
+  - pip
+  - pip:
+    - -r requirements.txt
