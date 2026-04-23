@@ -1,3 +1,8 @@
+from __future__ import annotations
+
+import os
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 from langchain.agents import create_agent
 from langchain_core.messages import HumanMessage
@@ -6,6 +11,22 @@ from langgraph.checkpoint.memory import InMemorySaver
 from ..utils import _make_llm
 from ..tools import get_pdb
 from .run_output import AgentRunOutput
+
+if TYPE_CHECKING:
+    from langchain_core.tools import BaseTool
+    from langgraph.store.base import BaseStore
+
+DEFAULT_STORE_URI = (
+    "postgresql://postgres:postgres@localhost:5432/postgres?sslmode=disable"
+)
+
+
+def _store_conn_string(explicit: str | None) -> str:
+    return explicit or os.environ.get(
+        "MDCROW_STORE_DATABASE_URL",
+        DEFAULT_STORE_URI,
+    )
+
 
 SYSTEM_PROMPT = """
     You are an expert molecular dynamics scientist, and
@@ -48,14 +69,48 @@ checkpointer = InMemorySaver()
 config = {"configurable": {"thread_id": "mdcrow-core-1"}}
 
 class MDCrow:
-    def __init__(self, model = "jinx-gpt-oss-20b", temp=0.1):
+    """Agent with optional LangGraph Postgres-backed long-term memory store."""
+
+    def __init__(
+        self,
+        model: str = "qwen3.6-35b-a3b",
+        temp: float = 0.1,
+        *,
+        store: BaseStore | None = None,
+        store_conn_string: str | None = None,
+        extra_tools: Sequence[BaseTool] = (),
+    ):
         self.llm = _make_llm(model, temp)
+        self._store_cm: object | None = None
+        if store is not None:
+            self.store: BaseStore = store
+        else:
+            from langgraph.store.postgres import PostgresStore
+
+            conn = _store_conn_string(store_conn_string)
+            self._store_cm = PostgresStore.from_conn_string(conn)
+            self.store = self._store_cm.__enter__()
+        setup = getattr(self.store, "setup", None)
+        if setup is not None:
+            setup()
         self.agent = create_agent(
             self.llm,
             system_prompt=SYSTEM_PROMPT,
             checkpointer=checkpointer,
-            tools=[get_pdb],
-            )
+            tools=[get_pdb, *extra_tools],
+            store=self.store,
+        )
+
+    def close(self) -> None:
+        if self._store_cm is not None:
+            self._store_cm.__exit__(None, None, None)
+            self._store_cm = None
+
+    def __enter__(self) -> MDCrow:
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
 
     def run(self, user_input):
         output = self.agent.invoke(
